@@ -1,0 +1,18 @@
+// watchOS – punkt wejścia aplikacji na zegarek (@main)
+import SwiftUI
+import SwiftData
+
+@main
+struct LekiWatchApp: App {
+    init() {
+        NotificationService.shared.configure()
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            WatchTodayView()
+                .tint(.teal)
+        }
+        .modelContainer(PersistenceController.shared.container)
+    }
+}
