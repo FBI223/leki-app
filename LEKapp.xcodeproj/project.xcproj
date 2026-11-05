@@ -5,9 +5,10 @@
     "Release",
   ],
   "localizations": {
-    "development": "en",
+    "development": "pl",
     "supported": [
       "Base",
+      "pl",
     ],
   },
   "files": [
@@ -21,7 +22,7 @@
         { "path": "MedicationEditView.swift", "target-membership": [ "LEKapp/compile-sources" ] },
         { "path": "MedicationListView.swift", "target-membership": [ "LEKapp/compile-sources" ] },
         { "path": "RootView.swift", "target-membership": [ "LEKapp/compile-sources" ] },
-        { "path": "StatsView.swift", "target-membership": [ "LEKapp/compile-sources" ] },
+        { "path": "MedCalendarView.swift", "target-membership": [ "LEKapp/compile-sources" ] },
         { "path": "Theme.swift", "target-membership": [ "LEKapp/compile-sources" ] },
         { "path": "TodayView.swift", "target-membership": [ "LEKapp/compile-sources" ] },
       ],
@@ -29,6 +30,20 @@
       "kind": "group",
       "path": "Shared",
       "children": [
+        {
+          "path": "WatchSync.swift",
+          "target-membership": [
+            "LEKapp/compile-sources",
+            "LekiWatch Watch App/compile-sources",
+          ],
+        },
+        {
+          "path": "AppFeatures.swift",
+          "target-membership": [
+            "LEKapp/compile-sources",
+            "LekiWatch Watch App/compile-sources",
+          ],
+        },
         {
           "path": "DoseEngine.swift",
           "target-membership": [
@@ -67,7 +82,7 @@
       "name": "Products",
       "children": [
         { "path": "<PRODUCTS>/LEKapp.app", "id": "000000000000000000000120", "type": "wrapper.application", "index": false },
-        { "path": "<PRODUCTS>/LekiWatch Watch App.app", "id": "A6821FB1309CC88A00428DBA", "type": "wrapper.application", "index": false, "target-membership": [ { "build-phase": "LEKapp/copy/Embed Watch Content", "header-preservation": "remove-on-copy" } ] },
+        { "path": "<PRODUCTS>/LekiWatch Watch App.app", "id": "A6821FB1309CC88A00428DBA", "type": "wrapper.application", "index": false, "target-membership": [ { "build-phase": "LEKapp/copy/Embed Watch Content", "header-preservation": "remove-on-copy", "platforms": [ "ios" ] } ] },
       ],
     },
   ],
@@ -92,6 +107,8 @@
         },
       ],
       "build-settings": {
+        "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+        "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME": "AccentColor",
         "CODE_SIGN_STYLE": "Automatic",
         "CURRENT_PROJECT_VERSION": "1",
         "DEVELOPMENT_TEAM": "K4XKLT7939",
@@ -109,10 +126,8 @@
         "INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]": "UIStatusBarStyleDefault",
         "INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad": "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight",
         "INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight",
-        "IPHONEOS_DEPLOYMENT_TARGET": "18.6",
         "LD_RUNPATH_SEARCH_PATHS": "@executable_path/Frameworks",
         "LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]": "@executable_path/../Frameworks",
-        "MACOSX_DEPLOYMENT_TARGET": "15.6",
         "MARKETING_VERSION": "1.0",
         "PRODUCT_BUNDLE_IDENTIFIER": "com.marcinsztukowskipersonalteam.LEKapp",
         "PRODUCT_NAME": "$(TARGET_NAME)",
@@ -223,9 +238,9 @@
     "GCC_WARN_UNINITIALIZED_AUTOS": "YES_AGGRESSIVE",
     "GCC_WARN_UNUSED_FUNCTION": "YES",
     "GCC_WARN_UNUSED_VARIABLE": "YES",
-    "IPHONEOS_DEPLOYMENT_TARGET": "27.2",
+    "IPHONEOS_DEPLOYMENT_TARGET": "18.6",
     "LOCALIZATION_PREFERS_STRING_CATALOGS": "YES",
-    "MACOSX_DEPLOYMENT_TARGET": "27.2",
+    "MACOSX_DEPLOYMENT_TARGET": "15.6",
     "MTL_ENABLE_DEBUG_INFO[config=Debug]": "INCLUDE_SOURCE",
     "MTL_ENABLE_DEBUG_INFO[config=Release]": "NO",
     "MTL_FAST_MATH": "YES",
@@ -236,7 +251,7 @@
     "SWIFT_COMPILATION_MODE[config=Release]": "wholemodule",
     "SWIFT_OPTIMIZATION_LEVEL[config=Debug]": "-Onone",
     "TVOS_DEPLOYMENT_TARGET": "27.2",
-    "WATCHOS_DEPLOYMENT_TARGET": "27.2",
+    "WATCHOS_DEPLOYMENT_TARGET": "11.6",
     "XROS_DEPLOYMENT_TARGET": "27.2",
   },
   "last-upgrade": "27.0",

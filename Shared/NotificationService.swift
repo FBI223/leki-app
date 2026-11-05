@@ -3,29 +3,44 @@ import Foundation
 import UserNotifications
 import SwiftData
 
-enum ReminderAction {
+nonisolated enum ReminderAction {
     static let category = "MED_REMINDER"
     static let taken = "TAKEN"
     static let snooze = "SNOOZE"
     static let skip = "SKIP"
 }
 
-/// Architektura: dane synchronizują się przez iCloud (SwiftData + CloudKit),
+nonisolated enum ReminderID {
+    static let dosePrefix = "dose|"
+    static let userInfoKey = "doseKey"
+
+    static func dose(_ key: DoseKey) -> String { "dose|\(key.id)" }
+    static func followUp(_ key: DoseKey, after minutes: Int) -> String { "dose|\(key.id)|+\(minutes)" }
+    static func snooze(_ key: DoseKey) -> String { "snooze|\(key.id)" }
+    static func lowStock(_ medicationID: UUID) -> String { "low|\(medicationID.uuidString)" }
+
+    /// Wszystkie powiadomienia należące do jednej dawki.
+    static func all(for key: DoseKey) -> [String] {
+        [dose(key), snooze(key)] + AppFeatures.criticalFollowUpMinutes.map { followUp(key, after: $0) }
+    }
+}
+
+/// Architektura: dane są w bazie SwiftData (opcjonalnie synchronizowanej przez iCloud),
 /// a KAŻDE urządzenie samo planuje lokalne powiadomienia na podstawie tych danych.
-/// Dzięki temu przypomnienia działają na wszystkich urządzeniach konta, także offline.
+///
+/// Przypomnienia są JEDNORAZOWE – osobne dla każdej dawki (lek + dzień + godzina) na najbliższe
+/// `AppFeatures.schedulingWindowDays` dni. Dzięki temu dawka oznaczona wcześniej (np. o 7:50
+/// zamiast 8:00) usuwa swoje przypomnienie i nie dostajesz go już po wzięciu leku.
 @MainActor
 final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationService()
 
-    /// Zegarek domyślnie NIE planuje własnych powiadomień – dostaje te z iPhone'a
-    /// (lustrzane, gdy iPhone jest zablokowany). Ustaw na true, jeśli chcesz, by zegarek
-    /// dzwonił niezależnie od iPhone'a (uwaga: mogą się wtedy dublować).
-    static let watchSchedulesOwnReminders = false
+    private var refreshTask: Task<Void, Never>?
+    private var center: UNUserNotificationCenter { .current() }
 
     // MARK: Konfiguracja
 
     func configure() {
-        let center = UNUserNotificationCenter.current()
         center.delegate = self
 
         let taken = UNNotificationAction(identifier: ReminderAction.taken, title: "Wzięte ✓", options: [])
@@ -41,75 +56,102 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func requestAuthorization() async {
-        let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .notDetermined else { return }
-        // .criticalAlert zadziała dopiero po zgodzie Apple (entitlement) – patrz instrukcja.
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert])
+        var options: UNAuthorizationOptions = [.alert, .sound, .badge]
+        if AppFeatures.criticalAlertsEnabled { options.insert(.criticalAlert) }
+        _ = try? await center.requestAuthorization(options: options)
     }
 
     // MARK: Planowanie
 
-    func reschedule(_ meds: [Medication]) async {
-        #if os(watchOS)
-        guard Self.watchSchedulesOwnReminders else { return }
-        #endif
-
-        let center = UNUserNotificationCenter.current()
-
-        // Usuń tylko własne cykliczne przypomnienia (nie drzemki ani alerty o zapasie)
-        let pending = await center.pendingNotificationRequests()
-        let ids = pending.map(\.identifier).filter { $0.hasPrefix("med|") }
-        center.removePendingNotificationRequests(withIdentifiers: ids)
-
-        // iOS pozwala na max 64 oczekujące powiadomienia – leki krytyczne mają pierwszeństwo.
-        var remaining = 60
-        let ordered = meds.filter(\.isActive).sorted { $0.isCritical && !$1.isCritical }
-
-        for med in ordered {
-            for minutes in med.times {
-                for request in makeRequests(for: med, minutes: minutes) where remaining > 0 {
-                    try? await center.add(request)
-                    remaining -= 1
-                }
-            }
+    /// Odświeża plan powiadomień chwilę po ostatniej zmianie (seria szybkich zmian = jedno odświeżenie).
+    func scheduleRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await reschedule()
         }
     }
 
-    private func makeRequests(for med: Medication, minutes: Int) -> [UNNotificationRequest] {
+    func reschedule() async {
+        #if os(watchOS)
+        guard AppFeatures.watchSchedulesOwnReminders else { return }
+        #endif
+
+        let context = PersistenceController.shared.container.mainContext
+        let meds = ((try? context.fetch(FetchDescriptor<Medication>())) ?? []).filter(\.isScheduledNow)
+        let book = DoseBook(meds: meds)
+        let now = Date.now
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+
+        var planned: [(fire: Date, request: UNNotificationRequest)] = []
+        for offset in 0..<AppFeatures.schedulingWindowDays {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
+            for dose in book.doses(on: day) where dose.log == nil && dose.isPlanned {
+                if dose.date > now {
+                    planned.append((dose.date, makeRequest(for: dose, followUpAfter: nil)))
+                }
+                if dose.medication.isCritical {
+                    for minutes in AppFeatures.criticalFollowUpMinutes {
+                        let fire = dose.date.addingTimeInterval(TimeInterval(minutes * 60))
+                        if fire > now {
+                            planned.append((fire, makeRequest(for: dose, followUpAfter: minutes)))
+                        }
+                    }
+                }
+            }
+        }
+        planned.sort { $0.fire < $1.fire }
+
+        // Usuń tylko przypomnienia o dawkach (nie drzemki ani alerty o zapasie) i zaplanuj od nowa.
+        let pending = await center.pendingNotificationRequests()
+        let stale = pending.map(\.identifier).filter { $0.hasPrefix(ReminderID.dosePrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: stale)
+
+        for item in planned.prefix(AppFeatures.maxScheduledNotifications) {
+            try? await center.add(item.request)
+        }
+    }
+
+    private func makeRequest(for dose: ScheduledDose, followUpAfter minutes: Int?) -> UNNotificationRequest {
+        let med = dose.medication
         let content = UNMutableNotificationContent()
         content.title = med.isCritical ? "⚠️ \(med.name)" : "💊 \(med.name)"
-        content.body = med.dosage.isEmpty ? "Czas na dawkę." : med.dosage
+        if minutes != nil {
+            content.body = "Dawka z \(DoseEngine.timeLabel(dose.minute)) nie jest jeszcze oznaczona."
+        } else {
+            content.body = med.dosage.isEmpty ? "Czas na dawkę." : med.dosage
+        }
         content.categoryIdentifier = ReminderAction.category
         content.threadIdentifier = med.id.uuidString
-        content.userInfo = ["medID": med.id.uuidString, "minutes": minutes]
+        content.userInfo = [ReminderID.userInfoKey: dose.key.id]
 
-        if med.isCritical {
+        if med.isCritical && AppFeatures.criticalAlertsEnabled {
             content.sound = .defaultCritical          // przebija wyciszenie i „Nie przeszkadzać"
             content.interruptionLevel = .critical
         } else {
             content.sound = .default
-            content.interruptionLevel = .timeSensitive // przebija tryby Skupienia
+            // Bez uprawnienia „time sensitive” (płatne konto) system traktuje to jak zwykłe powiadomienie.
+            content.interruptionLevel = .timeSensitive
         }
 
-        var base = DateComponents()
-        base.hour = minutes / 60
-        base.minute = minutes % 60
+        let fire = dose.date.addingTimeInterval(TimeInterval((minutes ?? 0) * 60))
+        let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
+        let id = minutes.map { ReminderID.followUp(dose.key, after: $0) } ?? ReminderID.dose(dose.key)
+        return UNNotificationRequest(identifier: id, content: content,
+                                     trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: false))
+    }
 
-        // Wszystkie 7 dni = jedno powiadomienie (oszczędza limit 64)
-        if med.weekdays.count == 7 {
-            let trigger = UNCalendarNotificationTrigger(dateMatching: base, repeats: true)
-            return [UNNotificationRequest(identifier: "med|\(med.id.uuidString)|\(minutes)|0",
-                                          content: content, trigger: trigger)]
-        }
-
-        return med.weekdays.sorted().map { weekday in
-            var comps = base
-            comps.weekday = weekday
-            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
-            return UNNotificationRequest(identifier: "med|\(med.id.uuidString)|\(minutes)|\(weekday)",
-                                         content: content, trigger: trigger)
-        }
+    /// Dawka została oznaczona lub cofnięta: usuń jej przypomnienia, ponowienia, drzemkę
+    /// i baner z centrum powiadomień, a potem przelicz plan (cofnięcie przywróci przypomnienie).
+    func doseResolved(_ key: DoseKey) {
+        let ids = ReminderID.all(for: key)
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+        center.removeDeliveredNotifications(withIdentifiers: ids)
+        scheduleRefresh()
     }
 
     func notifyLowStock(_ med: Medication) {
@@ -118,11 +160,11 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         content.body = "Zostało \(med.pillsLeft) szt. Czas uzupełnić zapas."
         content.sound = .default
         let request = UNNotificationRequest(
-            identifier: "low|\(med.id.uuidString)",
+            identifier: ReminderID.lowStock(med.id),
             content: content,
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 2, repeats: false)
         )
-        UNUserNotificationCenter.current().add(request)
+        center.add(request)
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -140,37 +182,34 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     ) async {
         let action = response.actionIdentifier
         let content = response.notification.request.content
-        let info = content.userInfo
+        guard let raw = content.userInfo[ReminderID.userInfoKey] as? String,
+              let key = DoseKey(id: raw) else { return }
 
-        // Drzemka – nowe powiadomienie za 10 minut
-        if action == ReminderAction.snooze {
-            if let copy = content.mutableCopy() as? UNMutableNotificationContent {
-                let request = UNNotificationRequest(
-                    identifier: "snooze|\(UUID().uuidString)",
-                    content: copy,
-                    trigger: UNTimeIntervalNotificationTrigger(timeInterval: 600, repeats: false)
-                )
-                try? await center.add(request)
-            }
-            return
+        switch action {
+        case ReminderAction.snooze:
+            guard let copy = content.mutableCopy() as? UNMutableNotificationContent else { return }
+            let request = UNNotificationRequest(
+                identifier: ReminderID.snooze(key),
+                content: copy,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 600, repeats: false)
+            )
+            try? await center.add(request)
+        case ReminderAction.taken:
+            await handle(key, status: .taken)
+        case ReminderAction.skip:
+            await handle(key, status: .skipped)
+        default:
+            break
         }
-
-        guard action == ReminderAction.taken || action == ReminderAction.skip,
-              let idString = info["medID"] as? String,
-              let medID = UUID(uuidString: idString) else { return }
-
-        let minutes = info["minutes"] as? Int ?? 0
-        let delivered = response.notification.date
-        await handle(taken: action == ReminderAction.taken, medID: medID, minutes: minutes, delivered: delivered)
     }
 
-    private func handle(taken: Bool, medID: UUID, minutes: Int, delivered: Date) {
+    private func handle(_ key: DoseKey, status: DoseStatus) {
         let context = PersistenceController.shared.container.mainContext
+        let medID = key.medicationID
         let descriptor = FetchDescriptor<Medication>(predicate: #Predicate { $0.id == medID })
-        guard let med = try? context.fetch(descriptor).first else { return }
-
-        let scheduled = DoseEngine.date(minutes: minutes, on: delivered)
-        DoseEngine.record(med, at: scheduled, status: taken ? .taken : .skipped, context: context)
-        try? context.save()
+        guard let med = try? context.fetch(descriptor).first,
+              let scheduled = DoseEngine.date(minutes: key.minute, dayKey: key.dayKey) else { return }
+        DoseEngine.record(med, dayKey: key.dayKey, minute: key.minute, scheduledAt: scheduled,
+                          status: status, context: context)
     }
 }
