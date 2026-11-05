@@ -7,13 +7,14 @@ struct TodayView: View {
 
     var body: some View {
         NavigationStack {
-            let doses = DoseEngine.doses(on: .now, for: meds)
-            let taken = doses.filter { DoseEngine.log(for: $0)?.status == .taken }.count
-            let lowStock = meds.filter { $0.isActive && $0.isLowOnStock }
+            let book = DoseBook(meds: meds)
+            let doses = book.doses(on: .now)
+            let stat = book.stat(on: .now)
+            let lowStock = meds.filter { $0.isScheduledNow && $0.isLowOnStock }
 
             ScrollView {
                 VStack(spacing: 14) {
-                    SummaryCard(taken: taken, total: doses.count, streak: DoseEngine.streak(meds: meds))
+                    SummaryCard(stat: stat, streak: book.streak())
 
                     ForEach(lowStock) { med in
                         LowStockBanner(med: med)
@@ -41,16 +42,18 @@ struct TodayView: View {
 }
 
 private struct SummaryCard: View {
-    let taken: Int
-    let total: Int
+    let stat: DayStat
     let streak: Int
 
-    private var progress: Double { total == 0 ? 0 : Double(taken) / Double(total) }
+    /// Postęp liczony od wszystkich dzisiejszych dawek (także tych, które dopiero będą).
+    private var progress: Double { stat.planned == 0 ? 0 : Double(stat.taken) / Double(stat.planned) }
 
     private var message: String {
-        if total == 0 { return "Dziś wolne od leków 🎉" }
-        if taken == total { return "Wszystko wzięte. Świetnie! ✅" }
-        return "Do wzięcia jeszcze: \(total - taken)"
+        if stat.planned == 0 { return "Dziś wolne od leków 🎉" }
+        if stat.taken == stat.planned { return "Wszystko wzięte. Świetnie! ✅" }
+        if stat.missed > 0 { return "Nieoznaczone dawki: \(stat.missed)" }
+        if stat.pending > 0 { return "Do wzięcia jeszcze: \(stat.pending)" }
+        return "Na dziś to wszystko."
     }
 
     var body: some View {
@@ -58,7 +61,7 @@ private struct SummaryCard: View {
             ZStack {
                 ProgressRing(progress: progress)
                 VStack(spacing: 0) {
-                    Text("\(taken)/\(total)")
+                    Text("\(stat.taken)/\(stat.planned)")
                         .font(.title2.bold().monospacedDigit())
                     Text("dziś")
                         .font(.caption)
@@ -102,14 +105,17 @@ private struct LowStockBanner: View {
     }
 }
 
+/// Wiersz jednej dawki – ekran Dziś i kalendarz.
 struct DoseRow: View {
     let dose: ScheduledDose
+    /// false dla przyszłych dni – dawki jeszcze nie można oznaczyć.
+    var interactive = true
     @Environment(\.modelContext) private var context
 
     var body: some View {
         let med = dose.medication
-        let entry = DoseEngine.log(for: dose)
-        let overdue = entry == nil && dose.date < .now
+        let state = dose.state()
+        let isPastDay = Calendar.current.startOfDay(for: dose.date) < Calendar.current.startOfDay(for: .now)
 
         HStack(spacing: 14) {
             Image(systemName: med.symbol)
@@ -129,20 +135,27 @@ struct DoseRow: View {
                 }
                 HStack(spacing: 6) {
                     Text(dose.date, format: .dateTime.hour().minute())
-                        .foregroundStyle(overdue ? Color.orange : Color.secondary)
-                        .fontWeight(overdue ? .semibold : .regular)
-                    if !med.dosage.isEmpty {
+                        .foregroundStyle(state == .missed ? Color.orange : Color.secondary)
+                        .fontWeight(state == .missed ? .semibold : .regular)
+                    let dosage = dose.log?.dosage.isEmpty == false ? dose.log!.dosage : med.dosage
+                    if !dosage.isEmpty {
                         Text("·")
-                        Text(med.dosage)
+                        Text(dosage).lineLimit(1)
                     }
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+                if let note = note(state: state, isPastDay: isPastDay) {
+                    Text(note.text)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(note.color)
+                }
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            if let entry {
+            if let entry = dose.log {
                 Button {
                     withAnimation(.snappy) { DoseEngine.undo(entry, context: context) }
                 } label: {
@@ -152,7 +165,7 @@ struct DoseRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cofnij")
-            } else {
+            } else if interactive {
                 HStack(spacing: 12) {
                     Button { record(.skipped) } label: {
                         Image(systemName: "forward.circle")
@@ -172,13 +185,23 @@ struct DoseRow: View {
             }
         }
         .card(padding: 12)
-        .opacity(entry == nil ? 1 : 0.6)
-        .sensoryFeedback(.success, trigger: entry?.statusRaw)
+        .opacity(dose.log == nil ? 1 : 0.65)
+        .sensoryFeedback(.success, trigger: dose.log?.statusRaw)
+    }
+
+    private func note(state: DoseState, isPastDay: Bool) -> (text: String, color: Color)? {
+        if let log = dose.log {
+            let verb = log.status == .taken ? "Wzięte" : "Pominięte"
+            return ("\(verb) \(log.resolvedAt.formatted(date: .abbreviated, time: .shortened))", .secondary)
+        }
+        if state == .missed && isPastDay { return ("Nie oznaczono", .red) }
+        if !dose.isPlanned { return ("Poza planem", .secondary) }
+        return nil
     }
 
     private func record(_ status: DoseStatus) {
         withAnimation(.snappy) {
-            DoseEngine.record(dose.medication, at: dose.date, status: status, context: context)
+            DoseEngine.record(dose, status: status, context: context)
         }
     }
 }

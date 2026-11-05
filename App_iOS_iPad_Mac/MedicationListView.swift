@@ -6,19 +6,52 @@ struct MedicationListView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \Medication.name) private var meds: [Medication]
     @State private var newMed: Medication?
+    @State private var pendingDelete: Medication?
 
     var body: some View {
         NavigationStack {
+            let active = meds.filter { !$0.isArchived }
+            let archived = meds.filter(\.isArchived)
+
             List {
-                ForEach(meds) { med in
-                    NavigationLink {
-                        MedicationEditView(med: med, isNew: false)
-                    } label: {
-                        MedicationRow(med: med)
+                Section {
+                    ForEach(active) { med in
+                        NavigationLink {
+                            MedicationEditView(med: med, isNew: false)
+                        } label: {
+                            MedicationRow(med: med)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button("Usuń", systemImage: "trash") { pendingDelete = med }
+                                .tint(.red)
+                        }
                     }
                 }
-                .onDelete { offsets in
-                    for index in offsets { context.delete(meds[index]) }
+
+                if !archived.isEmpty {
+                    Section {
+                        ForEach(archived) { med in
+                            MedicationRow(med: med)
+                                .swipeActions(edge: .leading) {
+                                    Button("Przywróć", systemImage: "arrow.uturn.backward") { restore(med) }
+                                        .tint(.teal)
+                                }
+                                .swipeActions(edge: .trailing) {
+                                    Button("Usuń", systemImage: "trash") { pendingDelete = med }
+                                        .tint(.red)
+                                }
+                                .contextMenu {
+                                    Button("Przywróć", systemImage: "arrow.uturn.backward") { restore(med) }
+                                    Button("Usuń z historią", systemImage: "trash", role: .destructive) {
+                                        pendingDelete = med
+                                    }
+                                }
+                        }
+                    } header: {
+                        Text("Archiwum")
+                    } footer: {
+                        Text("Leki w archiwum nie mają przypomnień, ale ich historia zostaje w kalendarzu. Przesuń w prawo, aby przywrócić.")
+                    }
                 }
             }
             .overlay {
@@ -48,7 +81,32 @@ struct MedicationListView: View {
                 .frame(minWidth: 460, minHeight: 620)
                 #endif
             }
+            .confirmationDialog(
+                "Usunąć „\(pendingDelete?.name ?? "")”?",
+                isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible,
+                presenting: pendingDelete
+            ) { med in
+                if !med.isArchived {
+                    Button("Przenieś do archiwum") { archive(med) }
+                }
+                Button("Usuń razem z historią", role: .destructive) { context.delete(med) }
+            } message: { med in
+                Text(med.isArchived
+                     ? "Cała historia tego leku zniknie z kalendarza. Tego nie da się cofnąć."
+                     : "Archiwum zachowuje historię dawek w kalendarzu. Usunięcie razem z historią jest nieodwracalne.")
+            }
         }
+    }
+
+    private func archive(_ med: Medication) {
+        med.archivedAt = .now
+        PlanHistory.sync(med, context: context)
+    }
+
+    private func restore(_ med: Medication) {
+        med.archivedAt = nil
+        PlanHistory.sync(med, context: context)
     }
 }
 
@@ -70,7 +128,9 @@ private struct MedicationRow: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
-                    if !med.isActive {
+                    if med.isArchived {
+                        Text("w archiwum").font(.caption2).foregroundStyle(.secondary)
+                    } else if !med.isActive {
                         Text("wstrzymany").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -83,7 +143,7 @@ private struct MedicationRow: View {
                             .background(med.color.opacity(0.15), in: Capsule())
                             .foregroundStyle(med.color)
                     }
-                    if med.isLowOnStock {
+                    if med.isLowOnStock && !med.isArchived {
                         Label("\(med.pillsLeft) szt.", systemImage: "exclamationmark.circle.fill")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.orange)
@@ -92,6 +152,6 @@ private struct MedicationRow: View {
             }
         }
         .padding(.vertical, 4)
-        .opacity(med.isActive ? 1 : 0.5)
+        .opacity(med.isScheduledNow ? 1 : 0.5)
     }
 }

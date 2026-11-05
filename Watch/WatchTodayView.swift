@@ -8,12 +8,15 @@ struct WatchTodayView: View {
 
     var body: some View {
         NavigationStack {
-            let doses = DoseEngine.doses(on: .now, for: meds)
-            let taken = doses.filter { DoseEngine.log(for: $0)?.status == .taken }.count
+            let book = DoseBook(meds: meds)
+            let doses = book.doses(on: .now)
+            let taken = doses.filter { $0.log?.status == .taken }.count
 
             List {
                 if doses.isEmpty {
-                    Text("Brak leków na dziś")
+                    Text(AppFeatures.iCloudSyncEnabled
+                         ? "Brak leków na dziś"
+                         : "Brak leków na dziś. Bez synchronizacji iCloud zegarek ma osobną listę leków.")
                         .foregroundStyle(.secondary)
                 } else {
                     Section {
@@ -35,6 +38,7 @@ struct WatchTodayView: View {
             }
             .navigationTitle("Leki")
         }
+        .task { PlanHistory.syncAll(context: context) }
     }
 }
 
@@ -44,13 +48,13 @@ private struct WatchDoseRow: View {
 
     var body: some View {
         let med = dose.medication
-        let entry = DoseEngine.log(for: dose)
+        let entry = dose.log
 
         Button {
             if let entry {
                 DoseEngine.undo(entry, context: context)
             } else {
-                DoseEngine.record(med, at: dose.date, status: .taken, context: context)
+                DoseEngine.record(dose, status: .taken, context: context)
             }
         } label: {
             HStack(spacing: 10) {
@@ -60,10 +64,11 @@ private struct WatchDoseRow: View {
                     Text(med.name).font(.headline).lineLimit(1)
                     Text(dose.date, format: .dateTime.hour().minute())
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(dose.state() == .missed ? .orange : .secondary)
                 }
                 Spacer()
-                Image(systemName: entry?.status == .taken ? "checkmark.circle.fill" : "circle")
+                Image(systemName: entry?.status == .taken ? "checkmark.circle.fill"
+                      : entry?.status == .skipped ? "forward.circle.fill" : "circle")
                     .foregroundStyle(entry?.status == .taken ? Color.green : Color.secondary)
             }
         }

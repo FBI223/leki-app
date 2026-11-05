@@ -13,7 +13,12 @@ struct MedicationEditView: View {
 
     @Bindable var med: Medication
     let isNew: Bool
+
+    // Plan (godziny, dni, aktywność) edytujemy lokalnie i zapisujemy dopiero przy wyjściu –
+    // dzięki temu powstaje jedna nowa wersja planu, a nie kilka podczas przewijania godzin.
     @State private var slots: [TimeSlot]
+    @State private var weekdays: Set<Int>
+    @State private var isActive: Bool
 
     init(med: Medication, isNew: Bool) {
         self.med = med
@@ -21,6 +26,14 @@ struct MedicationEditView: View {
         _slots = State(initialValue: med.times.map {
             TimeSlot(date: DoseEngine.date(minutes: $0, on: .now))
         })
+        _weekdays = State(initialValue: med.weekdays)
+        _isActive = State(initialValue: med.isActive)
+    }
+
+    private var times: [Int] { slots.map { DoseEngine.minutes(of: $0.date) } }
+    private var hasDuplicateTimes: Bool { Set(times).count != times.count }
+    private var canSave: Bool {
+        !med.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !slots.isEmpty && !weekdays.isEmpty
     }
 
     var body: some View {
@@ -48,6 +61,14 @@ struct MedicationEditView: View {
                 }
             } header: {
                 Text("Godziny przyjmowania")
+            } footer: {
+                if slots.isEmpty {
+                    Text("Dodaj co najmniej jedną godzinę.").foregroundStyle(.red)
+                } else if hasDuplicateTimes {
+                    Text("Powtórzone godziny zostaną zapisane raz.").foregroundStyle(.orange)
+                } else if !isNew {
+                    Text("Zmiana godzin, dni lub wstrzymanie leku obowiązuje od teraz – historia w kalendarzu się nie zmienia.")
+                }
             }
 
             Section("Dni tygodnia") {
@@ -56,11 +77,11 @@ struct MedicationEditView: View {
 
             Section {
                 Toggle(isOn: $med.isCritical) {
-                    Label("Alert krytyczny", systemImage: "bell.badge.fill")
+                    Label("Lek krytyczny", systemImage: "bell.badge.fill")
                         .foregroundStyle(.red)
                 }
             } footer: {
-                Text("Alert krytyczny przebija tryb Nie przeszkadzać i wyciszenie. Wymaga zgody Apple dla aplikacji oraz zgody użytkownika w ustawieniach powiadomień.")
+                Text(criticalFooter)
             }
 
             Section("Zapas leku") {
@@ -79,16 +100,16 @@ struct MedicationEditView: View {
 
             if !isNew {
                 Section {
-                    Toggle("Aktywny", isOn: $med.isActive)
+                    Toggle("Aktywny", isOn: $isActive)
                 } footer: {
-                    Text("Wstrzymany lek nie wysyła przypomnień na żadnym urządzeniu.")
+                    Text("Wstrzymany lek nie wysyła przypomnień na żadnym urządzeniu. Wcześniejsza historia zostaje.")
                 }
             }
         }
         .formStyle(.grouped)
         .navigationTitle(isNew ? "Nowy lek" : "Edytuj lek")
-        .onChange(of: slots) { _, newValue in
-            med.times = newValue.map { DoseEngine.minutes(of: $0.date) }
+        .onDisappear {
+            if !isNew { commitPlan() }
         }
         .toolbar {
             if isNew {
@@ -97,14 +118,35 @@ struct MedicationEditView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Zapisz") {
+                        med.name = med.name.trimmingCharacters(in: .whitespacesAndNewlines)
                         med.createdAt = Date()
                         context.insert(med)
+                        commitPlan()
                         dismiss()
                     }
-                    .disabled(med.name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!canSave)
                 }
             }
         }
+    }
+
+    private var criticalFooter: String {
+        var text = "Lek krytyczny jest wyróżniony i ma ponowne przypomnienia, jeśli dawka nie zostanie oznaczona."
+        if AppFeatures.criticalAlertsEnabled {
+            text += " Alert krytyczny przebija tryb Nie przeszkadzać i wyciszenie."
+        } else {
+            text += " Prawdziwe alerty krytyczne (przebijające wyciszenie) włącza się flagą w AppFeatures.swift – wymagają zgody Apple."
+        }
+        return text
+    }
+
+    /// Zapisuje plan i tworzy nową wersję w historii, jeśli coś się zmieniło.
+    private func commitPlan() {
+        if !slots.isEmpty { med.times = times }   // pustej listy godzin nie zapisujemy
+        if !weekdays.isEmpty { med.weekdays = weekdays }
+        med.isActive = isActive
+        PlanHistory.sync(med, context: context)
+        try? context.save()
     }
 
     // MARK: Elementy formularza
@@ -148,9 +190,10 @@ struct MedicationEditView: View {
 
     private var weekdayChips: some View {
         let symbols = Calendar.current.shortWeekdaySymbols   // indeks 0 = niedziela
+        let order = (0..<7).map { (Calendar.current.firstWeekday - 1 + $0) % 7 + 1 }
         return HStack(spacing: 6) {
-            ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { weekday in
-                let on = med.weekdays.contains(weekday)
+            ForEach(order, id: \.self) { weekday in
+                let on = weekdays.contains(weekday)
                 Text(symbols[weekday - 1])
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
@@ -160,13 +203,11 @@ struct MedicationEditView: View {
                     .foregroundStyle(on ? Color.white : Color.primary)
                     .background(on ? med.color : Color.secondary.opacity(0.15), in: Capsule())
                     .onTapGesture {
-                        var days = med.weekdays
                         if on {
-                            if days.count > 1 { days.remove(weekday) }   // min. jeden dzień
+                            if weekdays.count > 1 { weekdays.remove(weekday) }   // min. jeden dzień
                         } else {
-                            days.insert(weekday)
+                            weekdays.insert(weekday)
                         }
-                        med.weekdays = days
                     }
             }
         }
