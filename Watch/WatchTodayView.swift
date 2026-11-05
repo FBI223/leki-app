@@ -4,7 +4,9 @@ import SwiftData
 
 struct WatchTodayView: View {
     @Environment(\.modelContext) private var context
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Medication.name) private var meds: [Medication]
+    @AppStorage(WatchSync.lastSyncKey) private var lastSync: Double = 0
 
     var body: some View {
         NavigationStack {
@@ -14,9 +16,7 @@ struct WatchTodayView: View {
 
             List {
                 if doses.isEmpty {
-                    Text(AppFeatures.iCloudSyncEnabled
-                         ? "Brak leków na dziś"
-                         : "Brak leków na dziś. Bez synchronizacji iCloud zegarek ma osobną listę leków.")
+                    Text(emptyMessage)
                         .foregroundStyle(.secondary)
                 } else {
                     Section {
@@ -35,10 +35,42 @@ struct WatchTodayView: View {
                         WatchDoseRow(dose: dose)
                     }
                 }
+
+                if AppFeatures.watchSyncEnabled {
+                    Section {
+                        Button {
+                            WatchSync.shared.requestSnapshot()
+                        } label: {
+                            Label("Odśwież z iPhone'a", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    } footer: {
+                        Text(syncStatus)
+                    }
+                }
             }
             .navigationTitle("Leki")
         }
-        .task { PlanHistory.syncAll(context: context) }
+        .task {
+            // Z iCloud zegarek ma własną, synchronizowaną bazę; bez niego to kopia danych z iPhone'a.
+            if AppFeatures.iCloudSyncEnabled { PlanHistory.syncAll(context: context) }
+            WatchSync.shared.requestSnapshot()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { WatchSync.shared.requestSnapshot() }
+        }
+    }
+
+    private var emptyMessage: String {
+        if AppFeatures.watchSyncEnabled && lastSync == 0 {
+            return "Otwórz LEKapp na iPhonie, żeby przesłać leki na zegarek."
+        }
+        return "Brak leków na dziś"
+    }
+
+    private var syncStatus: String {
+        guard lastSync > 0 else { return "Jeszcze nie zsynchronizowano z iPhone'em." }
+        let date = Date(timeIntervalSince1970: lastSync)
+        return "iPhone: \(date.formatted(date: .omitted, time: .shortened))"
     }
 }
 
@@ -51,10 +83,13 @@ private struct WatchDoseRow: View {
         let entry = dose.log
 
         Button {
+            // Zmiana od razu na zegarku + wysłanie do iPhone'a, który zapisze ją w głównej bazie.
             if let entry {
                 DoseEngine.undo(entry, context: context)
+                WatchSync.shared.send(dose.key, status: nil)
             } else {
                 DoseEngine.record(dose, status: .taken, context: context)
+                WatchSync.shared.send(dose.key, status: .taken)
             }
         } label: {
             HStack(spacing: 10) {

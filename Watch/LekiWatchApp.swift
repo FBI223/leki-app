@@ -6,6 +6,7 @@ import SwiftData
 struct LekiWatchApp: App {
     init() {
         NotificationService.shared.configure()
+        WatchSync.shared.activate()   // dane z iPhone'a (bez iCloud)
     }
 
     var body: some Scene {

@@ -31,6 +31,13 @@
       "path": "Shared",
       "children": [
         {
+          "path": "WatchSync.swift",
+          "target-membership": [
+            "LEKapp/compile-sources",
+            "LekiWatch Watch App/compile-sources",
+          ],
+        },
+        {
           "path": "AppFeatures.swift",
           "target-membership": [
             "LEKapp/compile-sources",

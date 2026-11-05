@@ -24,6 +24,12 @@ nonisolated enum AppFeatures {
     /// Jeśli kontener iCloud się nie utworzy, aplikacja sama wróci do zapisu lokalnego.
     static let iCloudSyncEnabled = false
 
+    /// Synchronizacja iPhone ↔ Apple Watch przez WatchConnectivity (działa na darmowym koncie).
+    /// iPhone jest głównym źródłem danych i wysyła na zegarek leki, plan i ostatni tydzień historii;
+    /// dawki oznaczone na zegarku trafiają do bazy na iPhonie.
+    /// Wyłącza się sama, gdy włączony jest iCloud – wtedy zegarek synchronizuje się przez CloudKit.
+    static var watchSyncEnabled: Bool { !iCloudSyncEnabled }
+
     // MARK: Alerty krytyczne
 
     /// Prawdziwe alerty krytyczne (przebijają wyciszenie i tryb „Nie przeszkadzać").

@@ -6,6 +6,7 @@ import SwiftData
 struct LekiApp: App {
     init() {
         NotificationService.shared.configure()
+        WatchSync.shared.activate()   // iPhone → zegarek (bez iCloud); na Macu nic nie robi
     }
 
     var body: some Scene {
